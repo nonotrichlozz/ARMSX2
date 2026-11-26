@@ -176,7 +176,7 @@ object SecondScreen {
 
     /** Suppress the on-game OSD while the panel is up; restore the user's own flags when it isn't. */
     private fun applyOsdRouting() {
-        val suppress = moveOsd.value && presentation?.isShowing == true
+        val suppress = moveOsd.value && (presentation as? Panel)?.isShowing == true
         runCatching {
             if (suppress) {
                 NativeApp.osdApplyFlags(
@@ -194,7 +194,7 @@ object SecondScreen {
      *  should never surprise someone who plugs into a TV or casts (asked for by Shane [TDD]). */
     val enabled = mutableStateOf(false)
 
-    private var presentation: Panel? = null
+    private var presentation: Presentation? = null
     private var listener: DisplayManager.DisplayListener? = null
     private val handler = Handler(Looper.getMainLooper())
 
@@ -207,6 +207,7 @@ object SecondScreen {
         loadTempInterval()
         loadTopBar()
         loadIgnoredDisplays()
+        com.armsx2.gt3map.Gt3Map.load()   // GT3 map fork: see GT3-CARTE.md
     }
 
     fun set(context: Context, value: Boolean) {
@@ -370,10 +371,15 @@ object SecondScreen {
         val target = secondaryDisplay(context)
         if (target == null) { detach(); return }
         // Already showing on this display? Leave it alone.
-        presentation?.let { if (it.display?.displayId == target.displayId && it.isShowing) return }
+        // GT3 map fork: the map window replaces the panel while GT3 runs (see GT3-CARTE.md).
+        val map = com.armsx2.gt3map.Gt3Map.active()
+        presentation?.let {
+            if (it.display?.displayId == target.displayId && it.isShowing &&
+                (it is com.armsx2.gt3map.Gt3Map.Screen) == map) return
+        }
         detach()
         runCatching {
-            val p = Panel(context, target)
+            val p = if (map) com.armsx2.gt3map.Gt3Map.Screen(context, target) else Panel(context, target)
             p.show()
             presentation = p
             applyOsdRouting()

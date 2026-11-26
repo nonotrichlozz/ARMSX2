@@ -572,6 +572,7 @@ fun AppTab() {
                 description = str("secondScreen.moveOsd.desc"),
                 onChange = { com.armsx2.SecondScreen.setMoveOsd(it) },
             )
+            com.armsx2.gt3map.Gt3Map.Settings()   // GT3 map fork: see GT3-CARTE.md
 
             // The panel now takes its colours from whichever theme is selected, so this is only
             // about the GROUND behind the tiles: the theme's own, the library's backdrop for

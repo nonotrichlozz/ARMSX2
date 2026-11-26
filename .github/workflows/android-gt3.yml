@@ -1,0 +1,62 @@
+# GT3 map fork: builds ONLY the Android APK (the stock build-all.yml also builds PC/iOS
+# and only runs on master). Steps copied from the Android job in build-all.yml.
+# The APK is in the run's "Artifacts" section. See GT3-CARTE.md.
+name: Android APK (GT3 map)
+
+on:
+  push:
+    branches:
+      - feature/gt3-map
+  workflow_dispatch:
+
+concurrency:
+  group: android-gt3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: platforms/android
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install NDK + CMake
+        run: yes | sdkmanager "ndk;29.0.14206865" "cmake;3.31.6" >/dev/null || true
+
+      - name: Fetch shaderc third-party deps
+        run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
+
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
+      # GitHub flavor only (half the build time of both flavors). Own package id and name,
+      # so it installs next to a regular ARMSX2 instead of clashing with it. Without Play keys
+      # the release build is signed with the debug key, which is enough to sideload.
+      - name: Build release APK
+        run: >
+          ./gradlew :app:assembleGithubRelease --stacktrace
+          -Parmsx2.applicationId=com.armsx2.gt3map
+          "-Parmsx2.appLabel=ARMSX2 GT3"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: armsx2-gt3map-apk
+          path: platforms/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
