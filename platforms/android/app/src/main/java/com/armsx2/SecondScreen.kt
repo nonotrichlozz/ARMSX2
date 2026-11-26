@@ -508,6 +508,9 @@ object SecondScreen {
                     // wide, so the cell is given that shape at the column width and the whole
                     // cover then fits inside it.
                     height = when {
+                        // GT3 map fork: the map tile has its own size setting.
+                        tile == SecondScreenTile.GT3_MAP ->
+                            com.armsx2.gt3map.Gt3Map.tileHeightPx(resources.displayMetrics.heightPixels)
                         fixedH > 0 -> (dp * fixedH).toInt()
                         tile == SecondScreenTile.COVER -> {
                             // Sized against the DISPLAY, not the art.
@@ -528,7 +531,9 @@ object SecondScreen {
                         else -> ViewGroup.LayoutParams.WRAP_CONTENT
                     }
                     columnSpec = android.widget.GridLayout.spec(
-                        android.widget.GridLayout.UNDEFINED, 1, 1f,
+                        android.widget.GridLayout.UNDEFINED,
+                        if (tile == SecondScreenTile.GT3_MAP) com.armsx2.gt3map.Gt3Map.tileSpan(columns) else 1,   // GT3 map fork
+                        1f,
                     )
                     val m = (dp * 4).toInt()
                     setMargins(m, m, m, m)
@@ -571,6 +576,7 @@ object SecondScreen {
                 return macroAction(id).styleAsTile(action = true)
             }
             if (tile == SecondScreenTile.COVER) return buildCoverTile()
+            if (tile == SecondScreenTile.GT3_MAP) return com.armsx2.gt3map.Gt3Map.tileView(context)   // GT3 map fork
             if (tile.stat) {
                 return TextView(context).styleAsTile(action = false).also {
                     (it as TextView).text = I18n.get(tile.labelKey)

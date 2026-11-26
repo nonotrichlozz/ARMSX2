@@ -78,6 +78,10 @@ enum class SecondScreenTile(val id: String, val labelKey: String, val stat: Bool
     MACRO2("macro2", "secondScreen.tile.macro2", icon = "②"),
     MACRO3("macro3", "secondScreen.tile.macro3", icon = "③"),
     MACRO4("macro4", "secondScreen.tile.macro4", icon = "④"),
+
+    // GT3 map fork (see GT3-CARTE.md): the cropped mini-map, drawn by Gt3Map. The label is the
+    // text itself: I18n falls back to the key, so no translation tables are touched.
+    GT3_MAP("gt3map", "Carte GT3", stat = true),
 }
 
 object SecondScreenLayout {
@@ -90,6 +94,7 @@ object SecondScreenLayout {
     private val DEFAULT = listOf(
         SecondScreenTile.COVER,
         SecondScreenTile.TITLE,
+        SecondScreenTile.GT3_MAP,   // GT3 map fork
         SecondScreenTile.FPS,
         SecondScreenTile.BATTERY,
         SecondScreenTile.CLOCK,
@@ -170,6 +175,15 @@ object SecondScreenLayout {
                 }
                 MainActivityRuntime.prefs.edit()
                     .putInt(PREF_LAYOUT_VERSION, LAYOUT_VERSION).apply()
+            }
+            // GT3 map fork: once, put the map tile under the cover and title of a saved layout.
+            if (!MainActivityRuntime.prefs.getBoolean("gt3map.tilePlaced", false)) {
+                if (SecondScreenTile.GT3_MAP !in tiles) {
+                    val after = maxOf(tiles.indexOf(SecondScreenTile.COVER), tiles.indexOf(SecondScreenTile.TITLE))
+                    tiles = tiles.toMutableList().also { it.add(after + 1, SecondScreenTile.GT3_MAP) }
+                    persist()
+                }
+                MainActivityRuntime.prefs.edit().putBoolean("gt3map.tilePlaced", true).apply()
             }
             columnCount = MainActivityRuntime.prefs.getInt(PREF_COLUMNS, 3).coerceIn(1, 6)
             tileHeightDp = MainActivityRuntime.prefs.getInt(PREF_TILE_HEIGHT, 0).coerceIn(0, 200)

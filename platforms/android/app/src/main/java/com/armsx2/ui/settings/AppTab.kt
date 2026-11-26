@@ -572,7 +572,6 @@ fun AppTab() {
                 description = str("secondScreen.moveOsd.desc"),
                 onChange = { com.armsx2.SecondScreen.setMoveOsd(it) },
             )
-            com.armsx2.gt3map.Gt3Map.Settings()   // GT3 map fork: see GT3-CARTE.md
 
             // The panel now takes its colours from whichever theme is selected, so this is only
             // about the GROUND behind the tiles: the theme's own, the library's backdrop for
@@ -776,6 +775,7 @@ fun AppTab() {
                         onConfirm = resetLayout,
                     ),
             ) { Text(str("secondScreen.layout.reset")) }
+            com.armsx2.gt3map.Gt3Map.Settings()   // GT3 map fork: see GT3-CARTE.md
         }
 
         // Companion-app access to the recently-played list, over the RecentGamesContentProvider.
