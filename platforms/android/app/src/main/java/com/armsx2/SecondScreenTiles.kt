@@ -91,20 +91,11 @@ object SecondScreenLayout {
 
     /** What the panel showed before it was customisable, so an existing user's panel is unchanged
      *  by the update and a new one starts somewhere sensible. */
+    // GT3 map fork: big map on top, then save / load / screenshot.
     private val DEFAULT = listOf(
-        SecondScreenTile.COVER,
-        SecondScreenTile.TITLE,
-        SecondScreenTile.GT3_MAP,   // GT3 map fork
-        SecondScreenTile.FPS,
-        SecondScreenTile.BATTERY,
-        SecondScreenTile.CLOCK,
-        SecondScreenTile.ACHIEVEMENTS,
-        SecondScreenTile.RA_POINTS,
-        SecondScreenTile.RICH_PRESENCE,
+        SecondScreenTile.GT3_MAP,
         SecondScreenTile.SAVE,
         SecondScreenTile.LOAD,
-        SecondScreenTile.FAST_FORWARD,
-        SecondScreenTile.PAUSE,
         SecondScreenTile.SCREENSHOT,
     )
 
@@ -176,14 +167,10 @@ object SecondScreenLayout {
                 MainActivityRuntime.prefs.edit()
                     .putInt(PREF_LAYOUT_VERSION, LAYOUT_VERSION).apply()
             }
-            // GT3 map fork: once, put the map tile under the cover and title of a saved layout.
-            if (!MainActivityRuntime.prefs.getBoolean("gt3map.tilePlaced", false)) {
-                if (SecondScreenTile.GT3_MAP !in tiles) {
-                    val after = maxOf(tiles.indexOf(SecondScreenTile.COVER), tiles.indexOf(SecondScreenTile.TITLE))
-                    tiles = tiles.toMutableList().also { it.add(after + 1, SecondScreenTile.GT3_MAP) }
-                    persist()
-                }
-                MainActivityRuntime.prefs.edit().putBoolean("gt3map.tilePlaced", true).apply()
+            // GT3 map fork: once, switch a layout saved before the fork to the fork's default.
+            if (!MainActivityRuntime.prefs.getBoolean("gt3map.defaultLayout", false)) {
+                if (raw != null) { tiles = DEFAULT; persist() }
+                MainActivityRuntime.prefs.edit().putBoolean("gt3map.defaultLayout", true).apply()
             }
             columnCount = MainActivityRuntime.prefs.getInt(PREF_COLUMNS, 3).coerceIn(1, 6)
             tileHeightDp = MainActivityRuntime.prefs.getInt(PREF_TILE_HEIGHT, 0).coerceIn(0, 200)

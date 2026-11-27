@@ -183,7 +183,7 @@ object Gt3Map {
             value = whitePermille.intValue,
             min = 0,
             max = 50,
-            description = "Sous ce seuil de pixels blancs, la case affiche « Pas de carte ». 0 = toujours afficher.",
+            description = "Sous ce seuil de pixels blancs, la case reste unie (pas de carte). 0 = toujours afficher.",
             valueFormatter = { "$it ‰" },
             onReset = if (whitePermille.intValue != DEFAULT_WHITE_PERMILLE) ({
                 whitePermille.intValue = DEFAULT_WHITE_PERMILLE; saveInt("gt3map.whitePermille", DEFAULT_WHITE_PERMILLE); Unit
@@ -253,11 +253,6 @@ object Gt3Map {
         private var running = false
         private val paint = Paint()
         private val dst = RectF()
-        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0x99FFFFFF.toInt()
-            textAlign = Paint.Align.CENTER
-            textSize = 14 * resources.displayMetrics.density
-        }
 
         private val tick = object : Runnable {
             override fun run() {
@@ -303,11 +298,8 @@ object Gt3Map {
 
         override fun onDraw(canvas: Canvas) {
             val b = front
-            if (b == null || !hasMap) {
-                // Plain ground and a discreet label instead of whatever the crop shows in menus.
-                canvas.drawText("Pas de carte", width / 2f, height / 2f, textPaint)
-                return
-            }
+            // No map (menus, garage, loading): leave the plain tile ground, not bits of the picture.
+            if (b == null || !hasMap) return
             paint.isFilterBitmap = smooth.value
             val scale = minOf(width.toFloat() / b.width, height.toFloat() / b.height)
             val w = b.width * scale

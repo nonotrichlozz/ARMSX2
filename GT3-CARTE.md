@@ -13,8 +13,9 @@ L'appli s'appelle **ARMSX2 GT3** et s'installe à côté d'un ARMSX2 normal sans
 
 ## Activer
 Accueil → **☰** → **Paramètres** → **Appli** → activer **Panneau écran secondaire**.
-La case **Carte GT3** est déjà placée dans **Disposition du panneau**, sous la jaquette et le titre
-(on peut la retirer, ou la déplacer avec ▲ ▼, comme les autres cases).
+Disposition par défaut du panneau : **Carte GT3** en grand en haut, puis **Sauvegarder**, **Charger**
+et **Photo**. Dans **Disposition du panneau**, chaque case s'active ou se retire, et
+se déplace avec ▲ ▼.
 
 ## Réglages (sous « Réinitialiser la disposition », rubrique « Carte GT3 »)
 - **Taille de la case Carte GT3** : Petite (1 colonne), Moyenne (2 colonnes), Grande (toute la largeur).
@@ -24,7 +25,7 @@ La case **Carte GT3** est déjà placée dans **Disposition du panneau**, sous l
   (par défaut 4 → 29 % en largeur, 18 → 35 % en hauteur). Réglez en course : la case se met à jour
   en direct ; pendant le réglage, la détection est suspendue 3 secondes pour voir la zone brute.
 - **Détection du tracé (‰ de blanc)** : la case n'affiche la carte que si la zone contient assez de
-  pixels blancs (le contour du circuit). Sinon : « Pas de carte ». 0 = toujours afficher.
+  pixels blancs (le contour du circuit). Sinon la case reste unie. 0 = toujours afficher.
 - **Carte GT3 en plein écran** : ancien mode, la carte remplace tout le panneau. Désactivé par défaut.
 
 ## Limites
