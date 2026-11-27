@@ -107,7 +107,7 @@ object SecondScreenLayout {
         val cur = current()
         if (cur.any { it.tile == tile }) return true
         val sizes = if (tile == SecondScreenTile.COVER) listOf(2 to 4, 2 to 3, 2 to 2, 1 to 2, 1 to 1)
-        else listOf(2 to 1, 1 to 1)
+        else listOf(2 to 2, 2 to 1, 1 to 2, 1 to 1)
         for ((w, h) in sizes) for (row in 0..ROWS - h) for (col in 0..COLS - w) {
             val p = PlacedTile(tile, col, row, w, h)
             if (cur.none { it.overlaps(p) }) {
@@ -412,10 +412,15 @@ class PanelGrid(context: Context, private val accent: Int) : ViewGroup(context) 
     private val rect = Rect()
     private val box = RectF()
 
-    /** The empty cells, under the tiles, so it is clear what a tile snaps to. */
+    /** The empty cells, so it is clear what a tile snaps to. Not under the tiles: the dimmed ones
+     *  and the sides of the cover would let them show through. */
     override fun onDraw(canvas: Canvas) {
         if (!editing) return
         for (row in 0 until SecondScreenLayout.ROWS) for (col in 0 until SecondScreenLayout.COLS) {
+            if (items.any {
+                    it.tile != grabbed?.tile &&
+                        col >= it.col && col < it.col + it.w && row >= it.row && row < it.row + it.h
+                }) continue
             box.set(cellRect(col, row, 1, 1, rect))
             canvas.drawRoundRect(box, radius, radius, guidePaint)
         }
