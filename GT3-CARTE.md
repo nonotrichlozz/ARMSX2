@@ -21,24 +21,27 @@ se déplace avec ▲ ▼.
 - **Taille de la case Carte GT3** : Petite (1 colonne), Moyenne (2 colonnes), Grande (toute la largeur).
 - **Uniquement pour GT3** : la case est masquée dans les autres jeux.
 - **Carte GT3 lissée** : désactivé = pixels nets, activé = image adoucie.
-- **Zone : gauche / droite / haut / bas** : le rectangle découpé, en % de l'image
-  (par défaut 4 → 29 % en largeur, 18 → 35 % en hauteur). Réglez en course : la case se met à jour
-  en direct ; pendant le réglage, la détection est suspendue 3 secondes pour voir la zone brute.
-- **Détection du tracé (‰ de blanc)** : la case n'affiche la carte que si la zone contient assez de
-  pixels blancs (le contour du circuit). Sinon la case reste unie. 0 = toujours afficher.
+- **Cadrage automatique** (activé par défaut) : la case trouve seule la carte dans le quart
+  haut-gauche de l'image, grâce aux points jaunes et verts des voitures et au tracé, ajoute 8 % de
+  marge et suit en douceur. Désactivé : curseurs **Zone : gauche / droite / haut / bas** (en % de
+  l'image, par défaut 14 → 34 % et 17 → 35 %).
+- **Carte GT3 sur fond noir** (activé par défaut) : seulement le tracé (gris clair) et les voitures
+  sur du noir. Désactivé : l'image du jeu.
 - **Carte GT3 en plein écran** : ancien mode, la carte remplace tout le panneau. Désactivé par défaut.
 
+La case reste unie quand aucun point de voiture n'est visible (menus, garage, chargement).
+La case **Jaquette** n'apparaît qu'une fois l'image chargée ; sinon la place va aux autres cases.
+
 ## Limites
-- La mini-carte du jeu est en basse résolution : agrandie, elle est floue ou pixelisée.
+- Le tracé est retrouvé parce qu'il reste immobile quand le décor défile : il apparaît après
+  2 à 3 secondes de course. Voiture à l'arrêt, des traits du décor peuvent s'y ajouter.
+- Au tout début, le cadrage se fait autour des voitures et peut couper une partie du circuit.
+- La mini-carte du jeu est en basse résolution : agrandie, elle reste un peu grossière.
 - Elle reste aussi affichée sur l'écran du haut.
-- Les % comptent les bandes noires éventuelles : si vous changez le format d'image (4:3 / 16:9),
-  il faut refaire le réglage de la zone.
-- La détection est simple (pixels clairs) : un menu clair au même endroit peut la tromper ;
-  ajustez le seuil si besoin.
 - Sans 2ᵉ écran, rien ne change.
 
 ## Pour les développeurs
 Code : `platforms/android/app/src/main/java/com/armsx2/gt3map/Gt3Map.kt`.
 Branchements : quelques lignes marquées `GT3 map fork` dans `SecondScreenTiles.kt`,
 `SecondScreen.kt` et `ui/settings/AppTab.kt`.
-Copie de la zone par `PixelCopy` (~20 fois/s). Aucun fichier du jeu ni du BIOS n'est inclus.
+Copie par `PixelCopy` (~20 fois/s), analyse sur un fil séparé. Aucun fichier du jeu ni du BIOS n'est inclus.

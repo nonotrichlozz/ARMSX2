@@ -652,37 +652,59 @@ object SecondScreen {
         /** The cover currently shown, so the tick only reloads when the game actually changes. */
         private var coverKey: String? = null
 
+        /** When the last cover load failed (0 = it did not), so a failure is retried later. */
+        private var coverFailedAt = 0L
+
         private fun updateCover() {
             val view = coverImage ?: return
             val game = MainActivityRuntime.currentGame.value
             val key = game?.serial ?: game?.title
-            if (key == coverKey) return
+            // GT3 map fork: retry a failed load once a minute instead of never.
+            val retry = coverFailedAt != 0L && System.currentTimeMillis() - coverFailedAt > 60_000
+            if (key == coverKey && !retry) return
             coverKey = key
+            coverFailedAt = 0L
             // The label says what the tile IS while there is no picture, and what the GAME is
             // once there is a game but no art yet.
             coverLabel?.text = game?.title ?: I18n.get("secondScreen.tile.cover")
+            // GT3 map fork: the tile is hidden (GONE, the grid closes up and the map gets the room)
+            // until a picture is actually there, instead of an empty dark box.
+            val tile = tileViews[SecondScreenTile.COVER]
+            fun shown(ok: Boolean) { tile?.visibility = if (ok) View.VISIBLE else View.GONE }
+            shown(false)
             if (game == null) { view.setImageDrawable(null); return }
             val custom = runCatching { com.armsx2.CustomCovers.fileFor(context, game) }.getOrNull()
             if (custom != null) {
                 val bmp = runCatching {
                     android.graphics.BitmapFactory.decodeFile(custom.absolutePath)
                 }.getOrNull()
-                if (bmp != null) { view.setImageBitmap(bmp); return }
+                if (bmp != null) { view.setImageBitmap(bmp); shown(true); return }
                 // Fall through to the URL when a custom cover is set but unreadable.
             }
-            val url = game.coverUrl ?: run { view.setImageDrawable(null); return }
-            runCatching {
-                coil.ImageLoader(context).enqueue(
-                    coil.request.ImageRequest.Builder(context)
-                        .data(url)
-                        .target(
-                            onSuccess = { d -> view.setImageDrawable(d) },
-                            // Leave the label showing rather than a blank box.
-                            onError = { _ -> view.setImageDrawable(null) },
-                        )
-                        .build(),
-                )
+            // GT3 map fork: this disc's own cover as a second try, as the library card does when
+            // the Cover Region one is missing.
+            val urls = listOfNotNull(game.coverUrl, game.discCoverUrl).distinct()
+            fun load(i: Int) {
+                if (i >= urls.size) {
+                    view.setImageDrawable(null)
+                    coverFailedAt = System.currentTimeMillis()
+                    android.util.Log.w("ARMSX2-GT3", "second screen: no cover for ${game.serial} ($urls)")
+                    return
+                }
+                runCatching {
+                    // The app-wide loader, sharing the library's cache, rather than a new one per call.
+                    coil.Coil.imageLoader(context).enqueue(
+                        coil.request.ImageRequest.Builder(context)
+                            .data(urls[i])
+                            .target(
+                                onSuccess = { d -> view.setImageDrawable(d); shown(true) },
+                                onError = { _ -> load(i + 1) },
+                            )
+                            .build(),
+                    )
+                }.onFailure { load(i + 1) }
             }
+            load(0)
         }
 
         /**
