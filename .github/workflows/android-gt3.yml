@@ -45,6 +45,18 @@ jobs:
       - name: Install Rust Android target
         run: rustup target add aarch64-linux-android
 
+      # Same signing key on every build, so the APK installs as an update over the previous one.
+      # Without the secret, Gradle makes a fresh random debug key and Android refuses the update.
+      - name: Install the fixed debug key
+        env:
+          KS_B64: ${{ secrets.GT3_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            mkdir -p ~/.android && printf '%s' "$KS_B64" | base64 -d > ~/.android/debug.keystore
+          else
+            echo "::warning::GT3_DEBUG_KEYSTORE_B64 not set: random debug key, updates will not install over a previous build"
+          fi
+
       # GitHub flavor only (half the build time of both flavors). Own package id and name,
       # so it installs next to a regular ARMSX2 instead of clashing with it. Without Play keys
       # the release build is signed with the debug key, which is enough to sideload.
