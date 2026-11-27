@@ -1,6 +1,6 @@
-# GT3 map fork: builds ONLY the Android APK (the stock build-all.yml also builds PC/iOS
+# Fork build (see PANNEAU-ECRAN-BAS.md): builds ONLY the Android APK (the stock build-all.yml also builds PC/iOS
 # and only runs on master). Steps copied from the Android job in build-all.yml.
-# The APK is in the run's "Artifacts" section. See GT3-CARTE.md.
+# The APK is in the run's "Artifacts" section. See PANNEAU-ECRAN-BAS.md.
 name: Android APK (GT3 map)
 
 on:

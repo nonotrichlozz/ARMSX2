@@ -657,33 +657,35 @@ fun AppTab() {
                 )
             }
 
-            // Panel layout editor. Chips for what is on the panel, arrows for the order, a column
-            // count for the shape of the grid. Asked for as "a grid which can be filled with boxes
-            // containing the things one need" (NiceRon) — the point is that the panel is different
-            // for a save-scummer and for someone watching frame pacing, so it cannot be one fixed
-            // arrangement.
+            // Panel layout (fork: see PANNEAU-ECRAN-BAS.md). The chips put a tile on the panel or
+            // take it off, in the first free place; where it sits and how big it is is set on the
+            // panel itself, in its edit mode. A change reaches the panel already up straight away.
             //
-            // Reading the generation subscribes this whole block, so a toggle re-renders the chips
-            // AND the order list without either one owning the state.
+            // Reading the generation subscribes this block, so any change re-renders the chips.
             com.armsx2.SecondScreenLayout.generation.intValue
             val placed = com.armsx2.SecondScreenLayout.tiles()
+            var noRoom by remember { mutableStateOf(false) }
             Text(
                 str("secondScreen.layout"),
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(top = 12.dp),
             )
             Text(
-                str("secondScreen.layout.desc"),
+                "Cochez les cases à afficher. Pour les déplacer ou les agrandir : touchez le crayon ✎ " +
+                    "en haut de l'écran du bas, ou appuyez longuement sur le fond du panneau.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                if (com.armsx2.SecondScreenLayout.editsThisGame()) "Disposition modifiée : celle de ce jeu"
+                else "Disposition modifiée : celle de tous les jeux",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 com.armsx2.SecondScreenTile.entries.forEach { tile ->
-                    val toggle = {
-                        com.armsx2.SecondScreenLayout.toggle(tile)
-                        com.armsx2.SecondScreen.rebuild()
-                    }
+                    val toggle = { noRoom = !com.armsx2.SecondScreenLayout.toggle(tile) }
                     FilterChip(
                         selected = tile in placed,
                         onClick = toggle,
@@ -697,85 +699,55 @@ fun AppTab() {
                     )
                 }
             }
-            // Order, one row per placed tile. Only shown once there is something to order.
-            if (placed.size > 1) {
-                placed.forEachIndexed { index, tile ->
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "${index + 1}. ${str(tile.labelKey)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        val up = {
-                            com.armsx2.SecondScreenLayout.move(tile, -1)
-                            com.armsx2.SecondScreen.rebuild()
-                        }
-                        val down = {
-                            com.armsx2.SecondScreenLayout.move(tile, 1)
-                            com.armsx2.SecondScreen.rebuild()
-                        }
-                        OutlinedButton(
-                            onClick = up,
-                            enabled = index > 0,
-                            modifier = Modifier.controllerFocusable(
-                                "secondScreen.up.${tile.id}",
-                                RoundedCornerShape(11.dp),
-                                onConfirm = up,
-                            ),
-                        ) { Text("▲") }
-                        Spacer(Modifier.width(6.dp))
-                        OutlinedButton(
-                            onClick = down,
-                            enabled = index < placed.lastIndex,
-                            modifier = Modifier.controllerFocusable(
-                                "secondScreen.down.${tile.id}",
-                                RoundedCornerShape(11.dp),
-                                onConfirm = down,
-                            ),
-                        ) { Text("▼") }
-                    }
+            if (noRoom) {
+                Text(
+                    "Plus de place sur l'écran du bas : retirez ou réduisez d'abord une case.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            FlowRow(
+                Modifier.padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val editPanel = { com.armsx2.SecondScreen.startEditing() }
+                OutlinedButton(
+                    onClick = editPanel,
+                    modifier = Modifier.controllerFocusable(
+                        "secondScreen.layout.edit",
+                        RoundedCornerShape(11.dp),
+                        onConfirm = editPanel,
+                    ),
+                ) { Text("Modifier la disposition sur l'écran du bas") }
+                val resetLayout = {
+                    noRoom = false
+                    com.armsx2.SecondScreenLayout.reset()
                 }
-            }
-            IntSliderRow(
-                label = str("secondScreen.layout.columns"),
-                value = com.armsx2.SecondScreenLayout.columns(),
-                min = 1,
-                max = 6,
-                onChange = {
-                    com.armsx2.SecondScreenLayout.setColumns(it)
-                    com.armsx2.SecondScreen.rebuild()
-                },
-            )
-            // Columns already decide width (tiles split the row equally), so this is the other
-            // axis. 0 keeps the old behaviour of being exactly as tall as the text.
-            IntSliderRow(
-                label = str("secondScreen.layout.tileHeight"),
-                value = com.armsx2.SecondScreenLayout.tileHeight(),
-                min = 0,
-                max = 160,
-                onChange = {
-                    com.armsx2.SecondScreenLayout.setTileHeight(it)
-                    com.armsx2.SecondScreen.rebuild()
-                },
-            )
-            val resetLayout = {
-                com.armsx2.SecondScreenLayout.reset()
-                com.armsx2.SecondScreen.rebuild()
-            }
-            OutlinedButton(
-                onClick = resetLayout,
-                modifier = Modifier
-                    .padding(top = 4.dp)
-                    .controllerFocusable(
+                OutlinedButton(
+                    onClick = resetLayout,
+                    modifier = Modifier.controllerFocusable(
                         "secondScreen.layout.reset",
                         RoundedCornerShape(11.dp),
                         onConfirm = resetLayout,
                     ),
-            ) { Text(str("secondScreen.layout.reset")) }
-            com.armsx2.gt3map.Gt3Map.Settings()   // GT3 map fork: see GT3-CARTE.md
+                ) { Text(str("secondScreen.layout.reset")) }
+            }
+            ToggleRow(
+                label = "Même disposition pour tous les jeux",
+                value = com.armsx2.SecondScreenLayout.shared.value,
+                description = "Désactivé : chaque jeu garde sa propre disposition, celle que vous " +
+                    "réglez pendant qu'il tourne.",
+                onChange = { com.armsx2.SecondScreenLayout.setShared(it) },
+            )
+            if (com.armsx2.SecondScreenTile.RESOLUTION in placed) {
+                ToggleRow(
+                    label = "Case Résolution : mémoriser pour ce jeu",
+                    value = com.armsx2.SecondScreen.resRemember.value,
+                    description = "Activé : la résolution choisie avec la case est enregistrée pour le " +
+                        "jeu en cours. Désactivé : elle ne vaut que jusqu'à l'arrêt du jeu.",
+                    onChange = { com.armsx2.SecondScreen.setResRemember(it) },
+                )
+            }
         }
 
         // Companion-app access to the recently-played list, over the RecentGamesContentProvider.

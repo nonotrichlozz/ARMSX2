@@ -176,7 +176,7 @@ object SecondScreen {
 
     /** Suppress the on-game OSD while the panel is up; restore the user's own flags when it isn't. */
     private fun applyOsdRouting() {
-        val suppress = moveOsd.value && (presentation as? Panel)?.isShowing == true
+        val suppress = moveOsd.value && presentation?.isShowing == true
         runCatching {
             if (suppress) {
                 NativeApp.osdApplyFlags(
@@ -194,7 +194,7 @@ object SecondScreen {
      *  should never surprise someone who plugs into a TV or casts (asked for by Shane [TDD]). */
     val enabled = mutableStateOf(false)
 
-    private var presentation: Presentation? = null
+    private var presentation: Panel? = null
     private var listener: DisplayManager.DisplayListener? = null
     private val handler = Handler(Looper.getMainLooper())
 
@@ -207,7 +207,9 @@ object SecondScreen {
         loadTempInterval()
         loadTopBar()
         loadIgnoredDisplays()
-        com.armsx2.gt3map.Gt3Map.load()   // GT3 map fork: see GT3-CARTE.md
+        resRemember.value = runCatching {   // fork: see PANNEAU-ECRAN-BAS.md
+            MainActivityRuntime.prefs.getBoolean(PREF_RES_REMEMBER, false)
+        }.getOrDefault(false)
     }
 
     fun set(context: Context, value: Boolean) {
@@ -255,6 +257,47 @@ object SecondScreen {
         val ctx = MainActivityRuntime.instance?.applicationContext ?: return
         detach()
         attach(ctx)
+    }
+
+    // ---- Fork additions (see PANNEAU-ECRAN-BAS.md) --------------------------------------------
+
+    /** A layout change (settings chips, reset, the shared-layout switch), shown on the panel that
+     *  is already up, in place. Upstream tore the panel down and put it back for this. */
+    fun layoutChanged() {
+        handler.post { presentation?.syncLayout() }
+    }
+
+    /** The settings button "Modifier la disposition sur l'écran du bas": opens the panel's editor. */
+    fun startEditing() {
+        handler.post { presentation?.edit(true) }
+    }
+
+    private const val PREF_RES_REMEMBER = "secondScreen.resolution.remember"
+    private const val RESOLUTION_DEBOUNCE_MS = 1500L
+    private const val RESET_LABEL = "Réinitialiser"
+
+    /** Off: a change from the Résolution tile lasts until the game stops (boot pushes the stored
+     *  value again). On: it is also saved as the running game's own resolution. */
+    val resRemember = mutableStateOf(false)
+
+    fun setResRemember(on: Boolean) {
+        resRemember.value = on
+        runCatching { MainActivityRuntime.prefs.edit().putBoolean(PREF_RES_REMEMBER, on).apply() }
+    }
+
+    /** Live, through the same call as the in-game menu and the RES_UP / RES_DOWN hotkeys. */
+    private fun setResolution(value: Float) {
+        NativeApp.renderUpscalemultiplier(value)
+        MainActivityRuntime.upscale.value = value
+        if (!resRemember.value) return
+        val key = MainActivityRuntime.currentGame.value?.settingsKey?.takeIf { it.isNotBlank() } ?: return
+        val resolved = com.armsx2.config.ConfigStore.resolveForGame(key)
+        com.armsx2.config.ConfigStore.save(
+            com.armsx2.config.SettingsScope.Game,
+            key,
+            resolved.copy(output = resolved.output.copy(upscaleFloat = value)),
+            resolved,
+        )
     }
 
     fun detach() {
@@ -371,15 +414,10 @@ object SecondScreen {
         val target = secondaryDisplay(context)
         if (target == null) { detach(); return }
         // Already showing on this display? Leave it alone.
-        // GT3 map fork: the map window replaces the panel while GT3 runs (see GT3-CARTE.md).
-        val map = com.armsx2.gt3map.Gt3Map.active()
-        presentation?.let {
-            if (it.display?.displayId == target.displayId && it.isShowing &&
-                (it is com.armsx2.gt3map.Gt3Map.Screen) == map) return
-        }
+        presentation?.let { if (it.display?.displayId == target.displayId && it.isShowing) return }
         detach()
         runCatching {
-            val p = if (map) com.armsx2.gt3map.Gt3Map.Screen(context, target) else Panel(context, target)
+            val p = Panel(context, target)
             p.show()
             presentation = p
             applyOsdRouting()
@@ -389,20 +427,31 @@ object SecondScreen {
     /** The panel itself. */
     private class Panel(context: Context, display: Display) : Presentation(context, display) {
 
-        private lateinit var stats: TextView
-        private lateinit var idleLabel: TextView
-        private lateinit var grid: android.widget.GridLayout
+        // Fork (see PANNEAU-ECRAN-BAS.md): the tiles sit on a PanelGrid, each in the cells it was
+        // put in, and the panel has its own editor.
+        private lateinit var grid: PanelGrid
+        /** Clock, battery and the pencil; the editor's buttons take its place while editing. */
+        private lateinit var statusBar: View
+        private lateinit var editBar: View
+        private lateinit var sharedBox: android.widget.CheckBox
+        private lateinit var resetButton: TextView
+        /** "+ Ajouter": the tiles that are not on the panel, over the whole panel while open. */
+        private lateinit var picker: View
+        private lateinit var pickerList: android.widget.GridLayout
+        private var editing = false
+        private var resetArmedUntil = 0L
         /** Null when the top bar is off; the clock and battery are grid tiles then instead. */
         private var topBarClock: TextView? = null
         private var topBarBattery: TextView? = null
         private var dp: Float = 1f
         private val tileViews = HashMap<SecondScreenTile, View>()
-        /** Rows that only make sense with a game running; hidden in the library. */
-        private val gameRows = mutableListOf<View>()
         private var ticking = false
         private val tick = object : Runnable {
             override fun run() {
                 if (!ticking) return
+                // Picks up what nothing announces: a game starting or stopping, which can switch
+                // to (or away from) that game's own layout.
+                syncLayout()
                 updateStats()
                 handler.postDelayed(this, TICK_MS)
             }
@@ -418,7 +467,7 @@ object SecondScreen {
             setCancelable(false)
             setCanceledOnTouchOutside(false)
             dp = resources.displayMetrics.density
-            val pad = (dp * 14).toInt()
+            val pad = (dp * 10).toInt()
 
             // ★ Styled in code, not from a theme/XML. A Presentation gets the *system* dialog
             // theme, not the app's Compose theme, which is why the panel looked like a stock
@@ -426,160 +475,256 @@ object SecondScreen {
             // UI for it really doesn't look good at all"). Painting it here keeps the plain-View
             // build — see the class note on why Compose is not used in a Presentation — while
             // matching the app: dark ground, rounded surface tiles, one accent.
-            val rootView = LinearLayout(context).apply {
+            val content = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                background = panelBackground(context)
                 setPadding(pad, pad, pad, pad)
             }
 
-            // ---- Top bar: clock left, battery right -------------------------------------------
-            // A status strip rather than two grid cells. Same information, but it stops the
-            // clock competing for space with the things you actually press, and it gives the
-            // panel the shape of a menu instead of a wall of identical boxes.
-            if (topBar.value) {
-                val bar = LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, 0, 0, (dp * 10).toInt())
+            // ---- Top bar: clock left, battery right, then the pencil that opens the editor ------
+            // While editing, the editor's buttons take the bar's place, so the grid keeps its size
+            // and nothing jumps when edit mode starts.
+            val header = android.widget.FrameLayout(context)
+            statusBar = buildStatusBar()
+            editBar = buildEditBar().apply { visibility = View.GONE }
+            header.addView(statusBar, android.widget.FrameLayout.LayoutParams(-1, -1))
+            header.addView(editBar, android.widget.FrameLayout.LayoutParams(-1, -1))
+            content.addView(
+                header,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (dp * 44).toInt()),
+            )
+
+            // ---- The tiles ----------------------------------------------------------------------
+            // A fixed number of cells filling the rest of the panel: nothing reflows, nothing is
+            // pushed off the bottom, so no scrolling either.
+            grid = PanelGrid(context, ACCENT).apply {
+                onEdit = { SecondScreenLayout.set(it) }
+                // A long press on the ground, or on a read-out tile (those let touches through).
+                setOnLongClickListener {
+                    edit(true)
+                    true
                 }
-                topBarClock = TextView(context).apply {
+            }
+            content.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+            picker = buildPicker().apply { visibility = View.GONE }
+            setContentView(
+                android.widget.FrameLayout(context).apply {
+                    background = panelBackground(context)
+                    addView(content, android.widget.FrameLayout.LayoutParams(-1, -1))
+                    addView(picker, android.widget.FrameLayout.LayoutParams(-1, -1))
+                },
+            )
+            syncLayout()
+            updateStats()
+        }
+
+        /** Shows the stored layout when it is not what is on screen: a change from the settings, a
+         *  reset, or a game's own layout. Views are reused, so a cover already loaded stays. */
+        fun syncLayout() {
+            val want = SecondScreenLayout.current()
+            val wanted = want.mapTo(HashSet()) { it.tile }
+            tileViews.keys.retainAll(wanted)
+            // A macro given its buttons (or cleared) since its tile was built is built again, so
+            // assigning one in the settings takes effect without restarting anything.
+            val stale = tileViews.entries.removeAll { (tile, view) ->
+                val id = macroFor(tile) ?: return@removeAll false
+                runCatching { com.armsx2.ui.touch.TouchControls.macroCodes(id).isEmpty() }
+                    .getOrDefault(true) == view.isClickable
+            }
+            if (want == grid.items && !stale) return
+            grid.show(want) { tile -> tileViews.getOrPut(tile) { buildTile(tile) } }
+            updateStats()
+        }
+
+        /** Edit mode on or off. Every accepted change is saved as it is made, so "Terminé" only
+         *  has to leave. */
+        fun edit(on: Boolean) {
+            if (editing == on) return
+            editing = on
+            grid.editing = on
+            statusBar.visibility = if (on) View.GONE else View.VISIBLE
+            editBar.visibility = if (on) View.VISIBLE else View.GONE
+            picker.visibility = View.GONE
+            sharedBox.isChecked = SecondScreenLayout.shared.value
+            if (on) grid.say("Glisser : déplacer  ·  coin ◢ : agrandir  ·  ✕ : retirer", ms = 5000)
+            else grid.say("Disposition enregistrée", ms = 1500)
+            updateStats()
+        }
+
+        private fun buildStatusBar(): View = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            if (topBar.value) {
+                val clock = TextView(context).apply {
                     setTextColor(TEXT)
                     textSize = 15f
                     gravity = Gravity.START
                 }
-                topBarBattery = TextView(context).apply {
+                val battery = TextView(context).apply {
                     setTextColor(TEXT_DIM)
                     textSize = 15f
                     gravity = Gravity.END
                 }
-                bar.addView(topBarClock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                bar.addView(topBarBattery, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                rootView.addView(bar, lp())
-                // A hairline under it, so the bar reads as chrome and not as another tile.
-                rootView.addView(
-                    View(context).apply { setBackgroundColor(BORDER) },
-                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (dp * 1).toInt())
-                        .apply { bottomMargin = (dp * 10).toInt() },
-                )
+                topBarClock = clock
+                topBarBattery = battery
+                addView(clock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(battery, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             } else {
                 topBarClock = null
                 topBarBattery = null
+                addView(View(context), LinearLayout.LayoutParams(0, 1, 1f))
             }
+            addView(
+                TextView(context).apply {
+                    text = "✎"
+                    contentDescription = "Mode édition"
+                    textSize = 22f
+                    setTextColor(ACCENT)
+                    gravity = Gravity.CENTER
+                    setPadding((dp * 18).toInt(), 0, (dp * 6).toInt(), 0)
+                    setOnClickListener { edit(true) }
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+        }
 
-            stats = TextView(context).apply {
-                setTextColor(TEXT_DIM)
+        private fun barButton(label: String, onClick: () -> Unit) = TextView(context).apply {
+            text = label
+            gravity = Gravity.CENTER
+            setTextColor(ACCENT)
+            textSize = 14f
+            maxLines = 1
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = dp * 11f
+                setColor(TILE_ACTION)
+                setStroke((dp * 1f).toInt(), ACCENT_DIM)
+            }
+            setPadding((dp * 14).toInt(), 0, (dp * 14).toInt(), 0)
+            setOnClickListener { runCatching { onClick() } }
+        }
+
+        private fun buildEditBar(): View = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            fun slot() = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            ).apply { setMargins(0, (dp * 3).toInt(), (dp * 8).toInt(), (dp * 3).toInt()) }
+            addView(barButton("+ Ajouter") { openPicker() }, slot())
+            resetButton = barButton(RESET_LABEL) { resetTapped() }
+            addView(resetButton, slot())
+            sharedBox = android.widget.CheckBox(context).apply {
+                text = "Même disposition pour tous les jeux"
+                setTextColor(TEXT)
                 textSize = 13f
-                gravity = Gravity.CENTER_HORIZONTAL
-                visibility = View.GONE   // the header line only shows if no TITLE tile is placed
+                buttonTintList = android.content.res.ColorStateList.valueOf(ACCENT)
+                setOnCheckedChangeListener { _, on -> SecondScreenLayout.setShared(on) }
             }
-            rootView.addView(stats, lp())
+            addView(sharedBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(barButton("Terminé") { edit(false) }, slot())
+        }
 
-            // Shown in the library, where the game actions below would all be dead buttons.
-            idleLabel = TextView(context).apply {
-                text = I18n.get("secondScreen.noGame")
-                setTextColor(TEXT_DIM)
-                textSize = 14f
-                gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(0, pad, 0, pad)
+        /** Two taps, so one stray touch does not throw away a layout someone built. */
+        private fun resetTapped() {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now < resetArmedUntil) {
+                resetArmedUntil = 0L
+                resetButton.text = RESET_LABEL
+                SecondScreenLayout.reset()
+                grid.say("Disposition par défaut rétablie")
+                return
             }
-            rootView.addView(idleLabel, lp())
+            resetArmedUntil = now + 3000
+            resetButton.text = "Confirmer ?"
+            handler.postDelayed({
+                if (android.os.SystemClock.uptimeMillis() >= resetArmedUntil) resetButton.text = RESET_LABEL
+            }, 3100)
+        }
 
-            // The customisable grid. Every tile is one box; the user picks which and in what order
-            // (SecondScreenLayout), so this is a single loop rather than hand-placed rows.
-            val columns = SecondScreenLayout.columns()
-            grid = android.widget.GridLayout(context).apply {
-                columnCount = columns
+        private fun buildPicker(): View {
+            val pad = (dp * 14).toInt()
+            pickerList = android.widget.GridLayout(context).apply {
+                columnCount = 4
                 useDefaultMargins = false
             }
-            SecondScreenLayout.tiles().forEach { tile ->
-                // The bar owns these two while it is on; leaving them in the grid as well would
-                // show the time twice.
-                if (topBar.value && (tile == SecondScreenTile.CLOCK || tile == SecondScreenTile.BATTERY))
-                    return@forEach
-                val view = buildTile(tile) ?: return@forEach
-                val fixedH = SecondScreenLayout.tileHeight()
-                val params = android.widget.GridLayout.LayoutParams().apply {
-                    width = 0
-                    // 0 means "as tall as the text needs", which is what the panel always did.
-                    //
-                    // The cover is the exception: WRAP_CONTENT around an image gives the cell no
-                    // definite height, so FIT_CENTER had no box to fit into and the art spilled
-                    // past the cell and was clipped. Box art is about 1.4 times as tall as it is
-                    // wide, so the cell is given that shape at the column width and the whole
-                    // cover then fits inside it.
-                    height = when {
-                        // GT3 map fork: the map tile has its own size setting.
-                        tile == SecondScreenTile.GT3_MAP ->
-                            com.armsx2.gt3map.Gt3Map.tileHeightPx(resources.displayMetrics.heightPixels)
-                        fixedH > 0 -> (dp * fixedH).toInt()
-                        tile == SecondScreenTile.COVER -> {
-                            // Sized against the DISPLAY, not the art.
-                            //
-                            // Giving the cell the cover's own 1.4 ratio at the column width came
-                            // out as 869px on a 1080px-tall panel -- one tile taking most of the
-                            // screen and shoving everything under it off the bottom. The panel is
-                            // landscape; the art is portrait; deriving a height from the width is
-                            // the wrong axis entirely.
-                            //
-                            // FIT_CENTER already guarantees the whole cover is visible in a box
-                            // of ANY shape, so the box only has to be a reasonable size. A third
-                            // of the panel's height reads as a cover without crowding out the
-                            // tiles people actually press, and the tile-height slider overrides
-                            // it for anyone who wants it bigger.
-                            (resources.displayMetrics.heightPixels / 3).coerceAtLeast((dp * 96).toInt())
-                        }
-                        else -> ViewGroup.LayoutParams.WRAP_CONTENT
-                    }
-                    columnSpec = android.widget.GridLayout.spec(
-                        android.widget.GridLayout.UNDEFINED,
-                        if (tile == SecondScreenTile.GT3_MAP) com.armsx2.gt3map.Gt3Map.tileSpan(columns) else 1,   // GT3 map fork
-                        1f,
-                    )
-                    val m = (dp * 4).toInt()
-                    setMargins(m, m, m, m)
-                }
-                grid.addView(view, params)
-                // Actions need a VM; read-outs like the clock and battery do not, so only the
-                // former are hidden in the library. Hiding the clock too would leave an empty
-                // panel that looks broken.
-                if (!tile.stat) gameRows += view
-                tileViews[tile] = view
+            return LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad, pad, pad)
+                setBackgroundColor(0xF2000000.toInt())
+                // Takes the touches, so nothing under it is pressed while it is open.
+                isClickable = true
+                addView(
+                    TextView(context).apply {
+                        text = "Ajouter une case"
+                        setTextColor(TEXT)
+                        textSize = 18f
+                        setPadding(0, 0, 0, pad / 2)
+                    },
+                )
+                addView(
+                    android.widget.ScrollView(context).apply { addView(pickerList) },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+                )
+                addView(
+                    barButton("Annuler") { picker.visibility = View.GONE },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, (dp * 44).toInt()).apply {
+                        topMargin = pad / 2
+                        gravity = Gravity.END
+                    },
+                )
             }
-            rootView.addView(grid, lp())
+        }
 
-            // Scrollable, because the panel has no say in how tall it gets: the user picks how
-            // many tiles are on it and how tall each one is, and a fixed root simply clipped
-            // whatever did not fit off the bottom of the display with no indication it was there.
-            setContentView(
-                android.widget.ScrollView(context).apply {
-                    isFillViewport = true
-                    addView(
-                        rootView,
-                        android.widget.FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ),
-                    )
-                },
-            )
-            updateStats()
+        private fun openPicker() {
+            val free = SecondScreenTile.entries.filter { t -> grid.items.none { it.tile == t } }
+            if (free.isEmpty()) {
+                grid.say("Toutes les cases sont déjà sur le panneau")
+                return
+            }
+            pickerList.removeAllViews()
+            val m = (dp * 4).toInt()
+            free.forEach { tile ->
+                val choice = TextView(context).styleAsTile(action = true) as TextView
+                choice.text = I18n.get(tile.labelKey)
+                choice.setOnClickListener {
+                    picker.visibility = View.GONE
+                    if (!SecondScreenLayout.add(tile))
+                        grid.say("Pas de place libre : réduisez ou retirez une case", error = true)
+                }
+                pickerList.addView(
+                    choice,
+                    android.widget.GridLayout.LayoutParams(
+                        android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED),
+                        android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f),
+                    ).apply {
+                        width = 0
+                        height = (dp * 60).toInt()
+                        setMargins(m, m, m, m)
+                    },
+                )
+            }
+            picker.visibility = View.VISIBLE
         }
 
         /** One box. Read-out tiles are TextViews refreshed by [updateStats]; action tiles are the
-         *  same box with a press effect and a click. Returns null for a macro with nothing
-         *  assigned — an empty macro tile is a button that does nothing. */
-        private fun buildTile(tile: SecondScreenTile): View? {
+         *  same box with a press effect and a click. */
+        private fun buildTile(tile: SecondScreenTile): View {
             macroFor(tile)?.let { id ->
-                if (runCatching { com.armsx2.ui.touch.TouchControls.macroCodes(id).isEmpty() }
-                        .getOrDefault(true)
-                ) return null
+                val empty = runCatching { com.armsx2.ui.touch.TouchControls.macroCodes(id).isEmpty() }
+                    .getOrDefault(true)
+                // Fork: a macro with no buttons yet stays visible, dimmed and inert, so it can still
+                // be placed. Its buttons are chosen in the settings' Macros section.
+                if (empty) return TextView(context).styleAsTile(action = false).also {
+                    (it as TextView).text = tileFace(tile.icon, I18n.get(tile.labelKey))
+                    it.alpha = 0.45f
+                }
                 return macroAction(id).styleAsTile(action = true)
             }
             if (tile == SecondScreenTile.COVER) return buildCoverTile()
-            if (tile == SecondScreenTile.GT3_MAP) return com.armsx2.gt3map.Gt3Map.tileView(context)   // GT3 map fork
             if (tile.stat) {
                 return TextView(context).styleAsTile(action = false).also {
                     (it as TextView).text = I18n.get(tile.labelKey)
+                    // A game's title often needs a third line at any readable size.
+                    if (tile == SecondScreenTile.TITLE) it.maxLines = 3
                 }
             }
             val label = I18n.get(tile.labelKey)
@@ -612,38 +757,52 @@ object SecondScreen {
         private var coverImage: android.widget.ImageView? = null
         private var coverLabel: TextView? = null
 
+        /**
+         * Fork: the cover and nothing else. No box behind it and no text around it; the game's
+         * title is the separate "Jeu" tile. The picture is fitted whole into the cells, and the
+         * rounded clip follows the picture rather than the cells, so a portrait cover in a wider
+         * cell does not sit inside a visible frame. "Jaquette" shows in its place only in edit
+         * mode while there is no picture, so the tile can still be found and moved.
+         */
         private fun buildCoverTile(): View {
-            val image = android.widget.ImageView(context).apply {
-                // FIT_CENTER, not CENTER_CROP. Box art is portrait and a grid cell is not, so
-                // cropping to fill ate the top and bottom of the cover -- the parts with the
-                // logo and the title on them. Fitting shows the whole cover and letterboxes it
-                // against the tile background instead.
-                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            val image = object : android.widget.ImageView(context) {
+                override fun setImageDrawable(drawable: android.graphics.drawable.Drawable?) {
+                    super.setImageDrawable(drawable)
+                    invalidateOutline()
+                }
             }
-            // A label UNDER the image rather than instead of it. With no game, or before the
-            // fetch lands, an empty box is indistinguishable from a broken tile -- and this tile
-            // is blank far more often than the text ones, because it depends on a download.
+            image.scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            image.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(v: View, o: android.graphics.Outline) {
+                    val d = (v as android.widget.ImageView).drawable
+                    val iw = d?.intrinsicWidth ?: 0
+                    val ih = d?.intrinsicHeight ?: 0
+                    if (iw <= 0 || ih <= 0 || v.width == 0 || v.height == 0) {
+                        o.setRoundRect(0, 0, v.width, v.height, dp * 12f)
+                        return
+                    }
+                    // Where FIT_CENTER draws it: the whole picture, centred, as large as it fits.
+                    val s = minOf(v.width / iw.toFloat(), v.height / ih.toFloat())
+                    val w = (iw * s).toInt()
+                    val h = (ih * s).toInt()
+                    val l = (v.width - w) / 2
+                    val t = (v.height - h) / 2
+                    o.setRoundRect(l, t, l + w, t + h, dp * 12f)
+                }
+            }
+            image.clipToOutline = true
             val label = TextView(context).apply {
                 gravity = Gravity.CENTER
                 setTextColor(TEXT_DIM)
-                textSize = 13f
-                maxLines = 3
+                textSize = 15f
                 text = I18n.get("secondScreen.tile.cover")
+                visibility = View.GONE
             }
             coverImage = image
             coverLabel = label
+            coverKey = null
+            coverFailedAt = 0L
             return android.widget.FrameLayout(context).apply {
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    cornerRadius = dp * 14f
-                    setColor(TILE_STAT)
-                    setStroke((dp * 1f).toInt(), BORDER)
-                }
-                clipToOutline = true
-                outlineProvider = object : android.view.ViewOutlineProvider() {
-                    override fun getOutline(v: View, o: android.graphics.Outline) {
-                        o.setRoundRect(0, 0, v.width, v.height, dp * 14f)
-                    }
-                }
                 addView(label, android.widget.FrameLayout.LayoutParams(-1, -1))
                 addView(image, android.widget.FrameLayout.LayoutParams(-1, -1))
             }
@@ -655,40 +814,35 @@ object SecondScreen {
         /** When the last cover load failed (0 = it did not), so a failure is retried later. */
         private var coverFailedAt = 0L
 
+        /**
+         * Loading goes through the same sources the library uses: a user-set custom cover file
+         * first, then the fetched cover URL, then this disc's own cover as the library card does.
+         */
         private fun updateCover() {
             val view = coverImage ?: return
             val game = MainActivityRuntime.currentGame.value
             val key = game?.serial ?: game?.title
-            // GT3 map fork: retry a failed load once a minute instead of never.
+            // A failed load is tried again a minute later rather than never.
             val retry = coverFailedAt != 0L && System.currentTimeMillis() - coverFailedAt > 60_000
             if (key == coverKey && !retry) return
             coverKey = key
             coverFailedAt = 0L
-            // The label says what the tile IS while there is no picture, and what the GAME is
-            // once there is a game but no art yet.
-            coverLabel?.text = game?.title ?: I18n.get("secondScreen.tile.cover")
-            // GT3 map fork: the tile is hidden (GONE, the grid closes up and the map gets the room)
-            // until a picture is actually there, instead of an empty dark box.
-            val tile = tileViews[SecondScreenTile.COVER]
-            fun shown(ok: Boolean) { tile?.visibility = if (ok) View.VISIBLE else View.GONE }
-            shown(false)
-            if (game == null) { view.setImageDrawable(null); return }
+            // Otherwise the last game's cover stays up while the next one loads.
+            view.setImageDrawable(null)
+            if (game == null) return
             val custom = runCatching { com.armsx2.CustomCovers.fileFor(context, game) }.getOrNull()
             if (custom != null) {
                 val bmp = runCatching {
                     android.graphics.BitmapFactory.decodeFile(custom.absolutePath)
                 }.getOrNull()
-                if (bmp != null) { view.setImageBitmap(bmp); shown(true); return }
+                if (bmp != null) { view.setImageBitmap(bmp); return }
                 // Fall through to the URL when a custom cover is set but unreadable.
             }
-            // GT3 map fork: this disc's own cover as a second try, as the library card does when
-            // the Cover Region one is missing.
             val urls = listOfNotNull(game.coverUrl, game.discCoverUrl).distinct()
             fun load(i: Int) {
                 if (i >= urls.size) {
-                    view.setImageDrawable(null)
                     coverFailedAt = System.currentTimeMillis()
-                    android.util.Log.w("ARMSX2-GT3", "second screen: no cover for ${game.serial} ($urls)")
+                    android.util.Log.w("SecondScreen", "no cover for ${game.serial} ($urls)")
                     return
                 }
                 runCatching {
@@ -697,7 +851,7 @@ object SecondScreen {
                         coil.request.ImageRequest.Builder(context)
                             .data(urls[i])
                             .target(
-                                onSuccess = { d -> view.setImageDrawable(d); shown(true) },
+                                onSuccess = { d -> view.setImageDrawable(d) },
                                 onError = { _ -> load(i + 1) },
                             )
                             .build(),
@@ -771,13 +925,14 @@ object SecondScreen {
                 setColor(if (action) TILE_ACTION else TILE_STAT)
                 setStroke((dp * 1f).toInt(), if (action) ACCENT_DIM else BORDER)
             }
-            val h = (dp * 10).toInt()
-            val v = (dp * 14).toInt()
-            setPadding(h, v, h, v)
+            // Fork: a tile is as big as the cells it was given, so its text scales with it instead
+            // of sitting at one size in a box that may be several cells tall.
+            val p = (dp * 8).toInt()
+            setPadding(p, p, p, p)
             if (this is TextView) {
                 gravity = Gravity.CENTER
                 setTextColor(if (action) ACCENT else TEXT)
-                textSize = 14f
+                setAutoSizeTextTypeUniformWithConfiguration(11, 40, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
                 // ALWAYS two lines, not just at most two. An active tile appends a state line
                 // ("\n❚❚" on Pause, likewise Fast Forward), so with maxLines alone a tile grew
                 // the moment you used it and the row went ragged. Reserving the second line makes
@@ -823,11 +978,39 @@ object SecondScreen {
                         (MainActivityRuntime.currentSaveSlot.intValue + 1) % 10
                 SecondScreenTile.HIDE ->
                     MainActivityRuntime.instance?.let { SecondScreen.set(it.applicationContext, false) }
+                SecondScreenTile.RESOLUTION -> cycleResolution()
                 else -> Unit
             }
             // Reflect the new state immediately rather than at the next 500ms tick — a tile that
             // updates half a second after the tap reads as a missed press.
             updateStats()
+        }
+
+        /** When the Résolution tile last acted, so a burst of taps makes one change rather than a
+         *  string of render-target rebuilds; and until when it shows that a change failed. */
+        private var resolutionAt = 0L
+        private var resolutionFailedUntil = 0L
+
+        /** x2 <-> x3 (from any other value: x2). On failure the previous value is put back. */
+        private fun cycleResolution() {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - resolutionAt < RESOLUTION_DEBOUNCE_MS) return
+            resolutionAt = now
+            val old = MainActivityRuntime.upscale.value
+            val next = if (kotlin.math.abs(old - 2f) < 0.01f) 3f else 2f
+            runCatching { setResolution(next) }.onFailure { e ->
+                android.util.Log.w("SecondScreen", "resolution x$next failed, back to x$old", e)
+                runCatching { NativeApp.renderUpscalemultiplier(old) }
+                MainActivityRuntime.upscale.value = old
+                resolutionFailedUntil = now + 2500
+            }
+        }
+
+        private fun resolutionLabel(): String {
+            if (android.os.SystemClock.uptimeMillis() < resolutionFailedUntil) return "Échec"
+            val v = MainActivityRuntime.upscale.value
+            return "x" + if (v % 1f == 0f) v.toInt().toString()
+            else String.format(java.util.Locale.US, "%.2f", v).trimEnd('0').trimEnd('.')
         }
 
         /** A macro button: press fires every assigned pad button (honouring its turbo Frequency),
@@ -881,11 +1064,18 @@ object SecondScreen {
 
         private fun updateStats() {
             // In the library there is no VM, so save/load/pause/FF/screenshot and the macros are
-            // all dead buttons — hide them and say so rather than showing controls that do nothing.
+            // all dead buttons. Fork: they stay where they were put, dimmed and inert, rather than
+            // disappearing and leaving holes in the layout. Hide and Not-here need no game.
             val inGame = MainActivityRuntime.eState.value == EmuState.RUNNING ||
                 MainActivityRuntime.eState.value == EmuState.PAUSED
-            gameRows.forEach { it.visibility = if (inGame) View.VISIBLE else View.GONE }
-            idleLabel.visibility = if (inGame) View.GONE else View.VISIBLE
+            tileViews.forEach { (tile, view) ->
+                if (!view.isClickable || tile == SecondScreenTile.HIDE || tile == SecondScreenTile.NOT_HERE)
+                    return@forEach
+                view.isEnabled = inGame
+                view.alpha = if (inGame) 1f else 0.35f
+            }
+            coverLabel?.visibility =
+                if (editing && coverImage?.drawable == null) View.VISIBLE else View.GONE
 
             val fps = runCatching { NativeApp.getFPS() }.getOrDefault(0f)
             val title = MainActivityRuntime.currentGame.value?.title.orEmpty()
@@ -995,18 +1185,11 @@ object SecondScreen {
                         tile.icon,
                         aspectLabel(com.armsx2.ui.InGameOverlay.settingsState.value.output.aspectRatio),
                     )
+                    SecondScreenTile.RESOLUTION -> tileFace(resolutionLabel(), I18n.get(tile.labelKey))
                     else -> null
                 }
-                if (text != null && view is TextView) view.text = text
-            }
-
-            // Header line, only when the user has no TITLE tile placed — otherwise the game name
-            // would appear twice.
-            if (SecondScreenTile.TITLE in SecondScreenLayout.tiles() || title.isBlank()) {
-                stats.visibility = View.GONE
-            } else {
-                stats.visibility = View.VISIBLE
-                stats.text = title
+                // Only on a change: each set re-runs the text auto-sizing.
+                if (text != null && view is TextView && view.text.toString() != text.toString()) view.text = text
             }
         }
 
